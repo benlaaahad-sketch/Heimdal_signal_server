@@ -1,40 +1,40 @@
-# server.py - Signal Server برای پیدا کردن همدیگه
-from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit, join_room, leave_room
+# server.py - Signal Server ساده و پایدار برای Railway
+from flask import Flask, jsonify
+from flask_socketio import SocketIO, emit
 from flask_cors import CORS
-import uuid
+import os
 import time
 
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60)
 
-# ذخیره در RAM (با ریستارت پاک میشه)
+# دیکشنری کاربران آنلاین
 online_users = {}
-online_count = 0
 
 @app.route('/')
 def index():
     return jsonify({
         "name": "Heimdal Signal Server",
-        "version": "3.0",
+        "version": "1.0",
         "online": len(online_users),
         "status": "running"
     })
 
-@app.route('/stats')
-def stats():
+@app.route('/health')
+def health():
     return jsonify({
+        "status": "healthy",
         "online": len(online_users),
-        "users": list(online_users.keys())[:10],
         "time": time.time()
     })
 
+@socketio.on('connect')
+def handle_connect():
+    print(f"🟢 کاربر متصل شد: {request.sid}")
+
 @socketio.on('register')
 def handle_register(data):
-    """ثبت کاربر در شبکه"""
-    global online_count
-    
     user_id = data.get('userId')
     city = data.get('city', 'unknown')
     
@@ -42,29 +42,24 @@ def handle_register(data):
         online_users[user_id] = {
             'sid': request.sid,
             'city': city,
-            'joined': time.time(),
-            'user_agent': request.headers.get('User-Agent', 'unknown')
+            'joined': time.time()
         }
-        
-        join_room(f"city_{city}")
-        online_count = len(online_users)
         
         emit('registered', {
             'status': 'ok',
-            'online': online_count
+            'online': len(online_users)
         })
         
-        print(f"✅ کاربر {user_id} از {city} متصل شد - کل: {online_count}")
+        print(f"✅ کاربر {user_id} از {city} متصل شد")
 
 @socketio.on('find_peer')
 def handle_find_peer(data):
-    """پیدا کردن کاربر هم‌شهر"""
     city = data.get('city')
     exclude = data.get('exclude', [])
     
     candidates = []
     for uid, info in online_users.items():
-        if info['city'] == city and uid not in exclude:
+        if info['city'] == city and uid not in exclude and info['sid'] != request.sid:
             candidates.append({
                 'userId': uid,
                 'sid': info['sid']
@@ -85,14 +80,12 @@ def handle_find_peer(data):
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """کاربر آفلاین شد"""
     for uid, info in list(online_users.items()):
         if info['sid'] == request.sid:
             del online_users[uid]
-            print(f"🔴 کاربر {uid} قطع شد - مانده: {len(online_users)}")
+            print(f"🔴 کاربر {uid} قطع شد")
             break
 
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
